@@ -39,7 +39,7 @@ GEN_LEN = 128
 
 # initialize model and processor
 model = Qwen2VLForConditionalGeneration.from_pretrained(
-    "Qwen/Qwen2-VL-7B-Instruct-AWQ",
+    "Qwen/Qwen2-VL-72B-Instruct-AWQ",
     torch_dtype=torch.float16,
     attn_implementation="flash_attention_2",
     device_map="auto",
@@ -64,7 +64,7 @@ min_pixels = 224*224  # = 50,176 pixels
 max_pixels = 384*384  # = 147,456 pixels
 
 processor = AutoProcessor.from_pretrained(
-    "Qwen/Qwen2-VL-7B-Instruct", 
+    "Qwen/Qwen2-VL-72B-Instruct", 
     min_pixels=min_pixels, 
     max_pixels=max_pixels,
     do_resize=True,
