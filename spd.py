@@ -5,13 +5,13 @@ import gc
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
-DEBUG = False
+DEBUG = True
 FIRST_N_TOKENS = 3
-NUM_DRAFT_SAMPLES = 6
+NUM_DRAFT_SAMPLES = 10
 
 
 class DynamicCache:
-    def __init__(self, device=torch.device("cuda"), dtype=torch.bfloat16, max_length=2048):
+    def __init__(self, device=torch.device("cuda"), dtype=torch.bfloat16, max_length=10240):
         """
         Initializes the DynamicCache with specified device and data type.
 
@@ -23,8 +23,40 @@ class DynamicCache:
         self.device = device
         self.dtype = dtype
         self.max_length = max_length
-        self.sliding_window = max_length // 2  # Add sliding window
+        self.compression_ratio = 2  # How much to compress by when needed
         logging.debug(f"Initialized DynamicCache with device: {self.device} and dtype: {self.dtype}")
+
+    def compress_cache(self, k, v, num_tokens):
+        """
+        Compresses the cache by averaging adjacent tokens in the earlier portion of the sequence.
+        Keeps recent tokens at full resolution.
+        """
+        # Determine split point - keep recent tokens uncompressed
+        recent_tokens = min(self.max_length // 2, k.size(-1))
+        historical_tokens = k.size(-1) - recent_tokens
+        
+        if historical_tokens <= 0:
+            return k, v
+            
+        # Split into historical and recent portions
+        k_historical, k_recent = k[..., :historical_tokens], k[..., historical_tokens:]
+        v_historical, v_recent = v[..., :historical_tokens], v[..., historical_tokens:]
+        
+        # Compress historical portion using average pooling
+        k_compressed = torch.nn.functional.avg_pool1d(
+            k_historical.float().transpose(-1, -2),
+            kernel_size=self.compression_ratio,
+            stride=self.compression_ratio
+        ).transpose(-1, -2).to(self.dtype)
+        
+        v_compressed = torch.nn.functional.avg_pool1d(
+            v_historical.float().transpose(-1, -2),
+            kernel_size=self.compression_ratio,
+            stride=self.compression_ratio
+        ).transpose(-1, -2).to(self.dtype)
+        
+        # Concatenate compressed historical with uncompressed recent
+        return torch.cat([k_compressed, k_recent], dim=-1), torch.cat([v_compressed, v_recent], dim=-1)
 
     def update(self, new_past_key_values, num_tokens):
         """
@@ -47,22 +79,18 @@ class DynamicCache:
                 new_k = new_k.detach().to(dtype=self.dtype, device=self.device)
                 new_v = new_v.detach().to(dtype=self.dtype, device=self.device)
                 
-                # Concatenate with sliding window
-                if self.past_key_values[i][0].size(-1) > self.max_length - num_tokens:
-                    # Keep the last sliding_window tokens
-                    self.past_key_values[i] = (
-                        self.past_key_values[i][0][..., -self.sliding_window:],
-                        self.past_key_values[i][1][..., -self.sliding_window:]
-                    )
+                # Concatenate new tokens
+                k = torch.cat((self.past_key_values[i][0], new_k), dim=-1)
+                v = torch.cat((self.past_key_values[i][1], new_v), dim=-1)
                 
-                self.past_key_values[i] = (
-                    torch.cat((self.past_key_values[i][0], new_k), dim=-1),
-                    torch.cat((self.past_key_values[i][1], new_v), dim=-1)
-                )
-
+                # If exceeding max length, compress the cache
+                if k.size(-1) > self.max_length:
+                    k, v = self.compress_cache(k, v, num_tokens)
+                    
+                self.past_key_values[i] = (k, v)
+                
                 # Clear temporary tensors
-                del new_k
-                del new_v
+                del new_k, new_v
 
         torch.cuda.empty_cache()
 
@@ -215,6 +243,12 @@ class Generation:
         Returns:
             torch.Tensor: The generated input_ids with appended tokens.
         """
+        # Add deterministic settings at the start
+        torch.manual_seed(0)  # Set fixed seed
+        torch.cuda.manual_seed(0)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        
         # Add at the start of generate method
         torch.cuda.empty_cache()  # Clear CUDA cache before starting
 
@@ -429,7 +463,12 @@ class Generation:
             tuple: (accepted_tokens, number_of_accepted_tokens)
         """
         # Constants for better token acceptance
-        temperature = 0.7
+        if do_sample:
+            # TODO: get temperature from generation config
+            temperature = 0.7
+        else:
+            temperature = 1.0
+        # TODO: make this a hyperparameter
         acceptance_threshold = 0.3
 
         # Process logits

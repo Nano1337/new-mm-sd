@@ -35,11 +35,12 @@ Average time per token (ms): 46.62
 
 """
 
+USE_SPD = True
 GEN_LEN = 128
 
 # initialize model and processor
 model = Qwen2VLForConditionalGeneration.from_pretrained(
-    "Qwen/Qwen2-VL-72B-Instruct-AWQ",
+    "Qwen/Qwen2-VL-7B-Instruct-AWQ",
     torch_dtype=torch.float16,
     attn_implementation="flash_attention_2",
     device_map="auto",
@@ -64,7 +65,7 @@ min_pixels = 224*224  # = 50,176 pixels
 max_pixels = 384*384  # = 147,456 pixels
 
 processor = AutoProcessor.from_pretrained(
-    "Qwen/Qwen2-VL-72B-Instruct", 
+    "Qwen/Qwen2-VL-7B-Instruct", 
     min_pixels=min_pixels, 
     max_pixels=max_pixels,
     do_resize=True,
@@ -80,21 +81,17 @@ assistant_processor = AutoProcessor.from_pretrained(
     do_normalize=True
 )
 
-num_samples = 3
+num_samples = 10
 temp = None # baseline with greedy sampling strategy to get quality guarantees
 outputs = []
 gen_time = []
 num_tokens = []
 
 # model generation kwargs
-# TODO: port the huggingface source code to make this work. 
 # relevant code can be found in transformers/generation/utils.py
 generate_kwargs = {
     "max_new_tokens": GEN_LEN,
-    "use_cache": True,
-    # "assistant_model": assistant_model,
-    # "tokenizer": processor,
-    # "assistant_tokenizer": assistant_processor,
+    "use_cache": False,
 }
 if temp is not None:
     generate_kwargs.update({
@@ -108,10 +105,11 @@ else:
         "do_sample": False,
     })
 
-spd = Generation(model, assistant_model, processor, generate_kwargs)
-
-# FIXME: sanity check lmao
-# spd = Generation(assistant_model, assistant_model, processor, generate_kwargs)
+if USE_SPD:
+    spd = Generation(model, assistant_model, processor, generate_kwargs)
+else:
+    # Using target model only
+    spd = Generation(model, model, processor, generate_kwargs)
 
 def process_image(image):
     messages = [
