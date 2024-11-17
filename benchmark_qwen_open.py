@@ -144,8 +144,11 @@ def custom_collate_fn(batch):
 
 
 def main():
-
-
+    torch.manual_seed(0)
+    torch.cuda.manual_seed(0)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    
     ds = load_dataset("sayakpaul/coco-30-val-2014", split="train")
     # TODO: study batch inference later, this is a different setting and isn't within scope for now
     loader = DataLoader(
@@ -164,9 +167,6 @@ def main():
         # run decoder generation
         start = time.time()
         generated_ids = spd.generate(inputs)
-
-        # NOTE: using profiler for generation
-        # generated_ids = spd.generate_with_profiling(inputs) # profile torch generation to identify bottlenecks
         end = time.time()
 
         # process output to be human readable

@@ -7,32 +7,42 @@ import gc
 logging.basicConfig(level=logging.DEBUG)
 DEBUG = True
 FIRST_N_TOKENS = 3
-NUM_DRAFT_SAMPLES = 10
+NUM_DRAFT_SAMPLES = 6
 
 
 class DynamicCache:
-    def __init__(self, device=torch.device("cuda"), dtype=torch.bfloat16, max_length=10240):
+    def __init__(self, device=torch.device("cuda"), dtype=torch.bfloat16, max_length=10240, 
+                 compression_ratio=1.5, recent_ratio=1.0):
         """
         Initializes the DynamicCache with specified device and data type.
 
         Args:
             device (torch.device): The device to store the cache tensors.
             dtype (torch.dtype): The data type for the cache tensors.
+            max_length (int): Maximum length of the cache before compression
+            compression_ratio (float): How much to compress historical tokens by
+            recent_ratio (float): Proportion of tokens to keep uncompressed (0.0 to 1.0)
         """
         self.past_key_values = []
         self.device = device
         self.dtype = dtype
         self.max_length = max_length
-        self.compression_ratio = 2  # How much to compress by when needed
-        logging.debug(f"Initialized DynamicCache with device: {self.device} and dtype: {self.dtype}")
+        self.compression_ratio = compression_ratio
+        self.recent_ratio = recent_ratio
+        logging.debug(f"Initialized DynamicCache with device: {self.device}, dtype: {self.dtype}, "
+                     f"compression_ratio: {compression_ratio}, recent_ratio: {recent_ratio}")
 
     def compress_cache(self, k, v, num_tokens):
         """
         Compresses the cache by averaging adjacent tokens in the earlier portion of the sequence.
-        Keeps recent tokens at full resolution.
+        Keeps recent tokens at full resolution based on recent_ratio.
         """
-        # Determine split point - keep recent tokens uncompressed
-        recent_tokens = min(self.max_length // 2, k.size(-1))
+        # Skip compression entirely if recent_ratio is 1.0
+        if self.recent_ratio >= 1.0:
+            return k[..., -self.max_length:], v[..., -self.max_length:]
+        
+        # Determine split point based on recent_ratio
+        recent_tokens = min(int(self.max_length * self.recent_ratio), k.size(-1))
         historical_tokens = k.size(-1) - recent_tokens
         
         if historical_tokens <= 0:
@@ -131,12 +141,19 @@ class Generation:
             draft_model (PreTrainedModel): The draft Hugging Face model for speculative sampling.
             processor (Processor): The processor associated with the models.
             kwargs (dict): Additional keyword arguments for configuration.
+        Note: 
+            if using only target model, the cache will be shared. 
         """
         self.target_model = target_model
         self.draft_model = draft_model
         self.processor = processor
         self.kwargs = kwargs
-        self.tokenizer = processor.tokenizer  # Ensure tokenizer is accessible and consistent
+        self.tokenizer = processor.tokenizer
+        
+        # Determine if models are identical
+        self.shared_models = target_model is draft_model
+        if self.shared_models:
+            logging.debug("Target and draft models are identical - using shared cache")
 
         # Determine the device from the target model
         self.device = next(target_model.parameters()).device
@@ -144,20 +161,20 @@ class Generation:
 
         # Prepare separate generation configurations for target and draft models
         self.target_generation_config = self.prepare_generation_config()
-        self.draft_generation_config = copy.deepcopy(self.target_generation_config)
+        self.draft_generation_config = self.target_generation_config if self.shared_models else copy.deepcopy(self.target_generation_config)
 
-        # Initialize separate model_kwargs for target and draft models without using internal cache
+        # Initialize model_kwargs without using internal cache
         self.target_model_kwargs = copy.deepcopy(self.target_generation_config.to_dict())
-        self.draft_model_kwargs = copy.deepcopy(self.draft_generation_config.to_dict())
+        self.draft_model_kwargs = self.target_model_kwargs if self.shared_models else copy.deepcopy(self.draft_generation_config.to_dict())
 
-        # Disable internal caching by setting 'use_cache' to False
+        # Disable internal caching
         self.target_model_kwargs['use_cache'] = False
         self.draft_model_kwargs['use_cache'] = False
 
-        # Initialize external caches separately with bfloat16 precision
+        # Initialize external caches - use same cache if models are identical
         self.target_cache = DynamicCache(device=self.device, dtype=torch.bfloat16)
-        self.draft_cache = DynamicCache(device=self.device, dtype=torch.bfloat16)
-        logging.debug("External DynamicCache instances created for target and draft models.")
+        self.draft_cache = self.target_cache if self.shared_models else DynamicCache(device=self.device, dtype=torch.bfloat16)
+        logging.debug("External cache(s) created" + (" (shared)" if self.shared_models else ""))
 
     def prepare_generation_config(self):
         """
@@ -206,15 +223,14 @@ class Generation:
     def update_cache(self, outputs, num_tokens, role='target'):
         """
         Updates the external dynamic cache with new past_key_values from the model outputs.
-
-        Args:
-            outputs (dict or ModelOutput): The outputs returned by the model's forward/generate method.
-            num_tokens (int): The number of tokens to update in the cache.
-            role (str): 'target' or 'draft' to indicate which model's cache to update.
+        When models are shared, only updates once regardless of role.
         """
         if role == 'target':
             cache = self.target_cache
         elif role == 'draft':
+            # If models are shared, skip draft updates since they use target cache
+            if self.shared_models:
+                return
             cache = self.draft_cache
         else:
             raise ValueError("role must be either 'target' or 'draft'.")
@@ -342,20 +358,22 @@ class Generation:
             if tokens_generated % 10 == 0:
                 clear_memory()
 
-            # Prepare model_kwargs with external cache for draft model
-            draft_model_kwargs = self.prepare_model_kwargs(role='draft')
-
             # Generate K draft tokens autoregressively with draft model
             draft_tokens = []
             draft_logits = []
-            current_ids = input_ids
+            current_ids = input_ids.clone()  # Clone to avoid modifying original
+            current_attention_mask = attention_mask.clone()
+            
+            # Save the current draft cache state before speculative generation
+            if not self.shared_models:
+                draft_cache_state = copy.deepcopy(self.draft_cache.past_key_values)
 
             for _ in range(num_draft_samples):
                 draft_model_kwargs = self.prepare_model_kwargs(role='draft')
                 
                 draft_outputs = self.draft_model(
                     input_ids=current_ids,
-                    attention_mask=attention_mask,
+                    attention_mask=current_attention_mask,
                     pixel_values=pixel_values,
                     image_grid_thw=image_grid_thw,
                     **draft_model_kwargs
@@ -364,33 +382,29 @@ class Generation:
                 # Update draft cache
                 self.update_cache(draft_outputs, num_tokens=1, role='draft')
                 
-                # Get next token with temperature sampling
+                # Get next token
                 next_logits = draft_outputs['logits'][:, -1:, :]
-                next_logits = next_logits / 0.7  # Add temperature
-                
-                if do_sample:
-                    probs = torch.softmax(next_logits.squeeze(1), dim=-1)
-                    next_token = torch.multinomial(probs, num_samples=1)
-                else:
-                    next_token = next_logits.argmax(dim=-1, keepdim=True)
+                next_token = next_logits.argmax(dim=-1, keepdim=True) if not do_sample else torch.multinomial(
+                    torch.softmax(next_logits.squeeze(1) / 0.7, dim=-1), 
+                    num_samples=1
+                ).unsqueeze(-1)
                 
                 draft_tokens.append(next_token)
                 draft_logits.append(next_logits)
                 
-                # Update current_ids for next iteration
+                # Update for next iteration
                 next_token = next_token.squeeze(-1)
                 current_ids = torch.cat([current_ids, next_token], dim=1)
-                attention_mask = torch.cat([
-                    attention_mask,
-                    torch.ones((attention_mask.shape[0], 1), device=self.device, dtype=torch.long)
+                current_attention_mask = torch.cat([
+                    current_attention_mask,
+                    torch.ones((current_attention_mask.shape[0], 1), device=self.device, dtype=torch.long)
                 ], dim=1)
 
-            # Stack all draft tokens and logits
-            draft_tokens = torch.cat(draft_tokens, dim=1)  # Shape: [batch_size, num_draft_samples]
-            draft_logits = torch.cat(draft_logits, dim=1)  # Shape: [batch_size, num_draft_samples, vocab_size]
-            
             if DEBUG:
-                logging.debug(f"Draft tokens: '{self.tokenizer.batch_decode(draft_tokens[0], skip_special_tokens=True)}'")
+                debug_tokens = torch.tensor(draft_tokens).unsqueeze(0).unsqueeze(-1).tolist()
+                logging.debug(f"Draft tokens: '{self.tokenizer.batch_decode(debug_tokens[0], skip_special_tokens=True)}'")
+            draft_tokens = torch.cat(draft_tokens, dim=1)
+            draft_logits = torch.cat(draft_logits, dim=1)
 
             # Get target logits for the entire draft sequence at once   
             draft_tokens = draft_tokens.squeeze(-1)
@@ -407,7 +421,9 @@ class Generation:
 
             # Get logits for the draft positions
             # Shape: [batch_size, num_draft_samples, vocab_size]
-            target_logits = target_outputs['logits'][:, -(num_draft_samples):, :]
+            # NOTE: shift left by 1 to exclude the last token and include the first draft token
+            target_logits = target_outputs['logits'][:, -(num_draft_samples+1):-1, :]
+
             # BONUS: Get the extra target logit in case all tokens are accepted
             extra_target_logits = target_outputs['logits'][:, -1:, :]
 
@@ -430,7 +446,20 @@ class Generation:
                 attention_mask,
                 torch.ones((attention_mask.shape[0], valid_tokens_padded.shape[1]), device=self.device, dtype=torch.long)
             ), dim=1)
-            
+
+            # After speculative sampling, if we rejected tokens, restore draft cache
+            if not self.shared_models and n_matches < num_draft_samples:
+                self.draft_cache.past_key_values = draft_cache_state
+                # Update draft cache with only the accepted tokens
+                draft_outputs = self.draft_model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                    **self.prepare_model_kwargs(role='draft')
+                )
+                self.update_cache(draft_outputs, num_tokens=valid_tokens_padded.size(1), role='draft')
+
             tokens_generated += n_matches
 
             # Check for EOS token
@@ -479,6 +508,20 @@ class Generation:
         seq_len = candidate_new_tokens.size(1)
         accepted_tokens = []
 
+        # find argmax of both logits
+        if DEBUG: 
+            draft_argmax = draft_logits.argmax(dim=-1)
+            target_argmax = target_logits.argmax(dim=-1)
+            logging.debug(f"Draft argmax: {draft_argmax}")
+            logging.debug(f"Target argmax: {target_argmax}")
+             
+            # decode to tokens
+            draft_argmax_tokens = self.tokenizer.batch_decode(draft_argmax, skip_special_tokens=True)
+            target_argmax_tokens = self.tokenizer.batch_decode(target_argmax, skip_special_tokens=True)
+            logging.debug(f"Draft argmax tokens decoded: {draft_argmax_tokens}")
+            logging.debug(f"Target argmax tokens decoded: {target_argmax_tokens}")
+        
+        accepted = True
         for t in range(seq_len):
             current_token = candidate_new_tokens[:, t:t+1]
             
@@ -501,15 +544,16 @@ class Generation:
                         logging.debug(f"Rejected at position {t} - Sampled new token: '{self.tokenizer.decode(new_token[0])}'")
                     break
             else:
-                # Modified greedy case
+                # Using Greedy Decoding
                 target_token = target_logits[:, t].argmax(dim=-1, keepdim=True)
-                draft_token_prob = torch.softmax(draft_logits[:, t], dim=-1).gather(-1, current_token)
-                target_token_prob = torch.softmax(target_logits[:, t], dim=-1).gather(-1, target_token)
+                # draft_token_prob = torch.softmax(draft_logits[:, t], dim=-1).gather(-1, current_token)
+                # target_token_prob = torch.softmax(target_logits[:, t], dim=-1).gather(-1, target_token)
                 
-                accepted = (current_token == target_token) or (draft_token_prob >= acceptance_threshold * target_token_prob)
+                accepted = (current_token == target_token) # or (draft_token_prob >= acceptance_threshold * target_token_prob)
                 
                 if not accepted.any():
                     accepted_tokens.append(target_token)
+                    accepted = False
                     if DEBUG:
                         logging.debug(f"Rejected at position {t} - Using target token: '{self.tokenizer.decode(target_token[0])}'")
                     break
@@ -519,7 +563,7 @@ class Generation:
                 logging.debug(f"Token {t} accepted: '{self.tokenizer.decode(current_token[0])}'")
 
         # BONUS: If all K tokens are accepted and have extra target logits, add one more token
-        if len(accepted_tokens) == seq_len and extra_target_logits is not None:
+        if len(accepted_tokens) == seq_len and accepted and extra_target_logits is not None:
             if do_sample:
                 extra_probs = torch.softmax(extra_target_logits.squeeze(1), dim=-1)
                 extra_token = torch.multinomial(extra_probs, num_samples=1)
@@ -539,4 +583,3 @@ class Generation:
         if DEBUG:
             logging.debug(f"Total accepted tokens: {accepted_tokens.size(1)}")
         return accepted_tokens, accepted_tokens.size(1)
-
