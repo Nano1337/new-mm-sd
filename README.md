@@ -38,11 +38,13 @@ For example, here are my system specifications and the corresponding flash-atten
 - Instance: AWS g6.xlarge
 - OS: Ubuntu 22.04
 - Architecture: x86_64
+- PyTorch: 2.3.1
 
 I downloaded the matching wheel from the [flash-attention releases page](https://github.com/Dao-AILab/flash-attention/releases).
 ```bash
-wget https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.0.post2/flash_attn-2.7.0.post2+cu12torch2.5cxx11abiTRUE-cp311-cp311-linux_x86_64.whl
-uv pip install --no-deps --upgrade flash_attn-2.7.0.post2+cu12torch2.5cxx11abiTRUE-cp311-cp311-linux_x86_64.whl
+wget https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.0.post2/flash_attn-2.7.0.post2+cu12torch2.3cxx11abiFALSE-cp311-cp311-linux_x86_64.whl
+
+uv pip install --no-deps --upgrade flash_attn-2.7.0.post2+cu12torch2.3cxx11abiFALSE-cp311-cp311-linux_x86_64.whl
 ```
 
 
