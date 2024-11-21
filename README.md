@@ -21,14 +21,25 @@ uv venv --python 3.11.10
 source .venv/bin/activate
 ```
 
-Install dependencies:
+## Installing dependencies:
+
+To install all dependencies (except for flash-attn), run:
 ```bash
 uv sync
 ```
 
 To install flash-attn, please cross-check with the prebuilt wheel that matches your system specs. Please read this article for more details: https://til.simonwillison.net/python/installing-flash-attention
 
-As an example, I'm running python 3.11.10, cuda 12.1, ubuntu 22.04, x86_64, so I installed the correct version from the [releases page](https://github.com/Dao-AILab/flash-attention/releases): 
+For example, here are my system specifications and the corresponding flash-attention wheel I installed:
+- Python: 3.11.10
+- CUDA: 12.1
+- GPU: NVIDIA A10G (24GB VRAM)
+- Driver: 535.183.01
+- Instance: AWS g6.xlarge
+- OS: Ubuntu 22.04
+- Architecture: x86_64
+
+I downloaded the matching wheel from the [flash-attention releases page](https://github.com/Dao-AILab/flash-attention/releases).
 ```bash
 wget https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.0.post2/flash_attn-2.7.0.post2+cu12torch2.5cxx11abiTRUE-cp311-cp311-linux_x86_64.whl
 uv pip install --no-deps --upgrade flash_attn-2.7.0.post2+cu12torch2.5cxx11abiTRUE-cp311-cp311-linux_x86_64.whl
