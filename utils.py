@@ -40,7 +40,7 @@ def parse_args():
                       help='Whether to use speculative decoding with draft model, otherwise use target model only')
     parser.add_argument('--gen_len', type=int, default=128,
                       help='Maximum number of tokens to generate per sample')
-    parser.add_argument('--num_samples', type=int, default=3,
+    parser.add_argument('--num_samples', type=int, default=10,
                       help='Number of samples to process, must be >= 2 for benchmark metrics to be recorded')
 
     # speculative decoding args
