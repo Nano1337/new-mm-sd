@@ -16,6 +16,14 @@ from utils import (
     get_generation_kwargs
 )
 
+"""
+Experimentation ideas: 
+- can also ablate how increasing max_pixels affects acceptance rate (will require L40S for higher resolution)
+- can also ablate how increasing num_draft_samples affects acceptance rate
+- can add another flag for reduce or not (if we want to avg the acceptance rate of the draft samples), 
+    if not then we can analyze the trajectory of the acceptance rate over a generated sample
+"""
+
 def setup_models(args):
     """Initialize models and processors with given configuration"""
     # very conservative settings to prevent OOM
@@ -23,9 +31,6 @@ def setup_models(args):
     min_pixels = 224*224  # = 50,176 pixels
     # Maximum resolution that balances quality and memory
     max_pixels = args.max_pixels * args.max_pixels
-
-    # TODO: can also do ablation on how increasing max_pixels affects acceptance rate
-    # but this will require me to do this on the L40S
 
     model = Qwen2VLForConditionalGeneration.from_pretrained(
         args.target_model,
@@ -89,7 +94,7 @@ def main():
         spd = Generation(args, model, model, processor, generate_kwargs)
     
     # Initialize metric collectors
-    metrics = BenchmarkMetrics(outputs=[], generation_times=[], token_counts=[], acceptance_rates=[])
+    metrics = BenchmarkMetrics(args=args, outputs=[], generation_times=[], token_counts=[], acceptance_rates=[])
     
     # Load dataset
     ds = load_dataset("sayakpaul/coco-30-val-2014", split="train")
@@ -112,12 +117,13 @@ def main():
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )
         metrics.outputs.append(output_text)
+        metrics.acceptance_rates.append(acceptance_rate)
 
         # Skip warmup iterations when collecting metrics
         if i >= 1:
             metrics.generation_times.append(end - start)
             metrics.token_counts.append(generated_ids.shape[1] - inputs.input_ids.shape[1])
-            metrics.acceptance_rates.append(acceptance_rate)
+
     print(metrics)
 
 if __name__ == "__main__":

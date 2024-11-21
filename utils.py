@@ -4,49 +4,28 @@ from typing import List
 
 from qwen_vl_utils import process_vision_info
 
-@dataclass
-class BenchmarkMetrics:
-    """Stores benchmark metrics for model inference"""
-    outputs: List[str]
-    generation_times: List[float]
-    token_counts: List[int]
-    acceptance_rates: List[float]
-    @property
-    def avg_time_per_input_ms(self) -> float:   
-        """Average time in milliseconds to process each input"""
-        return (sum(self.generation_times) / len(self.generation_times)) * 1000
-
-    @property
-    def avg_time_per_token_ms(self) -> float:
-        """Average time in milliseconds to generate each token"""
-        return (sum(self.generation_times) / sum(self.token_counts)) * 1000
-
-
-    def __str__(self) -> str:
-        return (
-            f"Benchmark Results:\n"
-            f"Average time per input (ms): {self.avg_time_per_input_ms:.2f}\n"
-            f"Average time per token (ms): {self.avg_time_per_token_ms:.2f}\n"
-            f"Total tokens generated: {sum(self.token_counts)}\n"
-            f"Acceptance rates: {[round(float(rate) * 100, 1) for rate in self.acceptance_rates]}%\n"
-            f"Generated outputs: {self.outputs}\n"
-
-        )
-
 def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description='Benchmark Qwen-VL models')
-    parser.add_argument('--use_spd', type=bool, default=True,
+
+    # experimentation args
+    parser.add_argument('--use_spd', action='store_true', default=True,
                       help='Whether to use speculative decoding with draft model, otherwise use target model only')
+    parser.add_argument('--no_spd', action='store_false', dest='use_spd',
+                      help='Disable speculative decoding')
     parser.add_argument('--gen_len', type=int, default=128,
                       help='Maximum number of tokens to generate per sample')
     parser.add_argument('--num_samples', type=int, default=10,
                       help='Number of samples to process, must be >= 2 for benchmark metrics to be recorded')
-
+    parser.add_argument('--reduce_acceptance_rate', action='store_true', default=True,
+                      help='Whether to average the acceptance rate over the trajectory of a single sample') # TODO: use this in the code and dataclass
+    parser.add_argument('--no_reduce_acceptance_rate', action='store_false', dest='reduce_acceptance_rate',
+                      help='Whether to average the acceptance rate over the trajectory of a single sample')
+    
     # speculative decoding args
     parser.add_argument('--num_draft_samples', type=int, default=6,
                       help='Number of k draft tokens generated at once')
-    parser.add_argument('--first_n_tokens', type=int, default=10,
+    parser.add_argument('--first_n_tokens', type=int, default=3,
                       help='Number of tokens to generate with the target model before starting to use draft model')
     
     # NOTE: non-greedy sampling not yet supported
@@ -64,7 +43,7 @@ def parse_args():
                       help='Maximum number of pixels in the image')
     
     # other args
-    parser.add_argument('--debug', type=bool, default=False,
+    parser.add_argument('--debug', action='store_true', default=False,
                       help='Whether to print debug statements/all intermediate outputs')
 
     # kv cache args
@@ -79,6 +58,47 @@ def parse_args():
 
     return parser.parse_args()
 
+@dataclass
+class BenchmarkMetrics:
+    """Stores benchmark metrics for model inference"""
+    args: argparse.Namespace
+    outputs: List[str]
+    generation_times: List[float]
+    token_counts: List[int]
+    acceptance_rates: List[float]
+    @property
+    def avg_time_per_input_ms(self) -> float:   
+        """Average time in milliseconds to process each input"""
+        return (sum(self.generation_times) / len(self.generation_times)) * 1000
+
+    @property
+    def avg_time_per_token_ms(self) -> float:
+        """Average time in milliseconds to generate each token"""
+        return (sum(self.generation_times) / sum(self.token_counts)) * 1000
+
+    @property
+    def acceptance_rates_list(self) -> List[float]:
+        """Acceptance rates over all samples"""
+        if self.args.reduce_acceptance_rate:
+            return [round(float(rate) * 100, 1) for rate in self.acceptance_rates]
+        else:
+            return self.acceptance_rates
+
+    def __str__(self) -> str:
+        output = (
+            f"Benchmark Results:\n"
+            f"Average time per input (ms): {self.avg_time_per_input_ms:.2f}\n"
+            f"Average time per token (ms): {self.avg_time_per_token_ms:.2f}\n"
+            f"Total tokens generated: {sum(self.token_counts)}\n"
+        )
+        
+        output += "Per Sample Results:\n"
+        for i in range(int(self.args.num_samples)):
+            output += f"\nSample {i}:\n"
+            output += f"  Output: {self.outputs[i]}\n"
+            output += f"  Acceptance rates: {self.acceptance_rates_list[i]}\n"
+            
+        return output
 
 def get_generation_kwargs(args):
     """Configure generation parameters"""

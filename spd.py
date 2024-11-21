@@ -480,10 +480,13 @@ class Generation:
             clear_memory()
 
         # calculate average acceptance rate
-        sample_acceptance_rate = np.array(sample_acceptance_rate)
-        average_acceptance_rate = np.mean(sample_acceptance_rate)
-        if self.args.debug:
-            logging.debug(f"Average acceptance rate: {average_acceptance_rate:.2f}")
+        if self.args.reduce_acceptance_rate:
+            sample_acceptance_rate = np.array(sample_acceptance_rate)
+            average_acceptance_rate = np.mean(sample_acceptance_rate)
+            if self.args.debug:
+                logging.debug(f"Average acceptance rate: {average_acceptance_rate:.2f}")
+        else:
+            average_acceptance_rate = sample_acceptance_rate
         return input_ids, average_acceptance_rate
 
     def speculative_sampling(self, draft_logits, target_logits, candidate_new_tokens, extra_target_logits=None, do_sample=False):
