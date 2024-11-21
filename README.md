@@ -54,10 +54,10 @@ TODO: this section is outdated, will update soon
 
 Example command:
 ```
-python benchmark_qwen_open.py
+python benchmark_qwen_open.py --no_reduce_acceptance_rate --num_samples 10 --num_draft_samples 10
 ```
 
-See `get_parsed_args()` in `utils.py` for a list of flags.
+See `parse_args()` in `utils.py` for a list of flags.
 
 
 
