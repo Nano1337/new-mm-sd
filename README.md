@@ -48,9 +48,7 @@ uv pip install --no-deps --upgrade flash_attn-2.7.0.post2+cu12torch2.3cxx11abiFA
 ```
 
 
-# TODO: how to run - Assisted Generation Benchmarks
-
-TODO: this section is outdated, will update soon
+# Running Benchmark
 
 Example command:
 ```
@@ -60,5 +58,7 @@ python benchmark_qwen_open.py --no_reduce_acceptance_rate --num_samples 10 --num
 See `parse_args()` in `utils.py` for a list of flags.
 
 
-
-
+## TODOs: 
+- [ ] Implement BenchmarkMetrics to display different colors for which token is associated with which model that generated it
+- [ ] Do this for a visual reasoning dataset?
+- [ ] Do this for [WildVision-Bench](https://github.com/WildVision-AI/WildVision-Bench/blob/main/data/vision_bench_0617/model_answers/Qwen_Qwen-VL-Chat.jsonl)
