@@ -1,107 +1,130 @@
 import argparse
-import torch
+from dataclasses import dataclass
+from typing import List
 
-TORCH_DEVICE = 0
+from qwen_vl_utils import process_vision_info
+
+@dataclass
+class BenchmarkMetrics:
+    """Stores benchmark metrics for model inference"""
+    outputs: List[str]
+    generation_times: List[float]
+    token_counts: List[int]
+
+    @property
+    def avg_time_per_input_ms(self) -> float:
+        """Average time in milliseconds to process each input"""
+        return (sum(self.generation_times) / len(self.generation_times)) * 1000
+
+    @property
+    def avg_time_per_token_ms(self) -> float:
+        """Average time in milliseconds to generate each token"""
+        return (sum(self.generation_times) / sum(self.token_counts)) * 1000
+
+    def __str__(self) -> str:
+        return (
+            f"Benchmark Results:\n"
+            f"Average time per input (ms): {self.avg_time_per_input_ms:.2f}\n"
+            f"Average time per token (ms): {self.avg_time_per_token_ms:.2f}\n"
+            f"Total tokens generated: {sum(self.token_counts)}\n"
+            f"Generated outputs: {self.outputs}"
+        )
+
+def parse_args():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='Benchmark Qwen-VL models')
+    parser.add_argument('--use_spd', type=bool, default=True,
+                      help='Whether to use speculative decoding with draft model, otherwise use target model only')
+    parser.add_argument('--gen_len', type=int, default=128,
+                      help='Maximum number of tokens to generate per sample')
+    parser.add_argument('--num_samples', type=int, default=10,
+                      help='Number of samples to process, must be >= 2 for benchmark metrics to be recorded')
+
+    # speculative decoding args
+    parser.add_argument('--num_draft_samples', type=int, default=6,
+                      help='Number of k draft tokens generated at once')
+    parser.add_argument('--first_n_tokens', type=int, default=3,
+                      help='Number of tokens to generate with the target model before starting to use draft model')
+    
+    # NOTE: non-greedy sampling not yet supported
+    parser.add_argument('--temperature', type=float, default=None,
+                      help='Sampling temperature (None for greedy)')
+    
+    # model args
+    parser.add_argument('--target_model', type=str, 
+                      default="Qwen/Qwen2-VL-7B-Instruct-AWQ",
+                      help='Path to target model')
+    parser.add_argument('--assistant_model', type=str,
+                      default="Qwen/Qwen2-VL-2B-Instruct-AWQ",
+                      help='Path to assistant model')
+    parser.add_argument('--max_pixels', type=int, default=324,
+                      help='Maximum number of pixels in the image')
+    
+    # other args
+    parser.add_argument('--debug', type=bool, default=False,
+                      help='Whether to print debug statements/all intermediate outputs')
+
+    # kv cache args
+    parser.add_argument('--dtype', type=str, default="bfloat16",
+                      help='Data type for the cache tensors')
+    parser.add_argument('--max_length', type=int, default=10240,
+                      help='Maximum length of the cache before compression')
+    parser.add_argument('--compression_ratio', type=float, default=1.5,
+                      help='How much to compress historical tokens by')
+    parser.add_argument('--recent_ratio', type=float, default=1.0, # currently no compression, uses <16GB VRAM
+                      help='Proportion of tokens to keep uncompressed (0.0 to 1.0)')
+
+    return parser.parse_args()
 
 
-def get_mismatches(og_outputs, new_outputs, dtype=None):
-    mismatches = 0
-    num_samples = len(og_outputs)
-    for i in range(num_samples):
-        if og_outputs[i] != new_outputs[i]:
-            mismatches += 1
-            if dtype is None:  # float 16 is a bit unstable, float 32 gets the same results
-                print("\nOG :", og_outputs[i])
-                print("NEW:", new_outputs[i])
-    print(f"Mismatches: {mismatches}")
-    if dtype is not None:
-        print("Note: dtype is NOT float32, so mismatches can happen due to numerical instability")
-
-
-def get_parsed_args():
-    parser = argparse.ArgumentParser(description='Run the benchmark, comparing the original to the new generation.')
-    parser.add_argument('model', type=str)
-    parser.add_argument('--aux-model', type=str)
-    parser.add_argument('--dtype', type=str)
-    parser.add_argument('--temperature', type=float)  # non None triggers sampling
-    parser.add_argument('--num-samples', type=int, default=20)
-    parser.add_argument('--max-gpu-memory', type=int, nargs="*")
-
-    args = parser.parse_args()
-
-    args.load_in_8bit = False
-    args.load_in_4bit = False
-    if args.dtype is not None:
-        if args.dtype == "fp16" or args.dtype == "float16":
-            args.dtype = torch.float16
-        elif args.dtype == "fp32" or args.dtype == "float32":
-            args.dtype = torch.float32
-        elif args.dtype == "bf16" or args.dtype == "bfloat16":
-            args.dtype = torch.bfloat16
-        elif args.dtype == "int8":
-            args.dtype = torch.float16
-            args.load_in_8bit = True
-        elif args.dtype == "fp4":
-            args.dtype = None
-            args.load_in_4bit = True
-
-    return args
-
-
-def run_model(args, processor_cls, model_cls, run_prediction_loop):
-    tokenizer = processor_cls.from_pretrained(args.model)
-
-    if args.max_gpu_memory is None:  # fails if it doesn't fit in a GPU
-        max_memory = {0: "100GiB", "cpu": "0GiB"}
-    else:
-        max_memory = {}
-        for i in range(len(args.max_gpu_memory)):
-            max_memory[i] = str(args.max_gpu_memory[i])+"GiB"
-        max_memory["cpu"] = "50GiB"
-
-    model_kwargs = {
-        "pretrained_model_name_or_path": args.model,
-        "device_map": "auto",
-        "max_memory": max_memory,
-        "torch_dtype": args.dtype,
-        "load_in_8bit": args.load_in_8bit,
-        "load_in_4bit": args.load_in_4bit,
+def get_generation_kwargs(args):
+    """Configure generation parameters"""
+    generate_kwargs = {
+        "max_new_tokens": args.gen_len,
+        "use_cache": False,
     }
-    model = model_cls.from_pretrained(**model_kwargs)
-    if model.generation_config.pad_token_id is None:
-        model.generation_config.pad_token_id = model.generation_config.eos_token_id
-
-    og_outputs = run_prediction_loop(model, tokenizer, args.num_samples, args.temperature)
-    return og_outputs
-
-
-def run_model_with_assistant(args, processor_cls, model_cls, run_prediction_loop):
-    tokenizer = processor_cls.from_pretrained(args.model)
-
-    aux_model = model_cls.from_pretrained(args.aux_model)
-    aux_model = aux_model.to(device=TORCH_DEVICE, dtype=args.dtype)
-    if aux_model.generation_config.pad_token_id is None:
-        aux_model.generation_config.pad_token_id = aux_model.generation_config.eos_token_id
-
-    if args.max_gpu_memory is None:  # fails if it doesn't fit in a GPU
-        max_memory = {0: "100GiB", "cpu": "0GiB"}
+    if args.temperature is not None:
+        generate_kwargs.update({
+            "do_sample": True,
+            "temperature": args.temperature,
+            "top_p": 0.001,
+            "top_k": 1,
+        })
     else:
-        max_memory = {}
-        for i in range(len(args.max_gpu_memory)):
-            max_memory[i] = str(args.max_gpu_memory[i])+"GiB"
-        max_memory["cpu"] = "50GiB"
+        generate_kwargs.update({
+            "do_sample": False,
+        })
+    return generate_kwargs
 
-    model_kwargs = {
-        "pretrained_model_name_or_path": args.model,
-        "device_map": "auto",
-        "max_memory": max_memory,
-        "torch_dtype": args.dtype,
-        "load_in_8bit": args.load_in_8bit,
-        "load_in_4bit": args.load_in_4bit,
-    }
-    model = model_cls.from_pretrained(**model_kwargs)
-    if model.generation_config.pad_token_id is None:
-        model.generation_config.pad_token_id = model.generation_config.eos_token_id
+def process_image(image, processor):
+    """Process an image for model inference"""
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "image": image,
+                },
+                {"type": "text", "text": "Describe this image."},
+            ],
+        }
+    ]
+    # Preparation for inference
+    text = processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    image_inputs, video_inputs = process_vision_info(messages)
+    inputs = processor(
+        text=[text],
+        images=image_inputs,
+        videos=video_inputs,
+        padding=True,
+        return_tensors="pt",
+    )
+    inputs = inputs.to("cuda")
+    return inputs
 
-    new_outputs = run_prediction_loop(model, tokenizer, args.num_samples, args.temperature, aux_model)
-    return new_outputs
+def custom_collate_fn(batch):
+    """Collate function for DataLoader"""
+    return [b["image"] for b in batch]

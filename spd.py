@@ -5,10 +5,6 @@ import gc
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
-DEBUG = True
-FIRST_N_TOKENS = 3
-NUM_DRAFT_SAMPLES = 6
-
 
 class DynamicCache:
     def __init__(self, device=torch.device("cuda"), dtype=torch.bfloat16, max_length=10240, 
@@ -132,11 +128,12 @@ class DynamicCache:
         return self.past_key_values.copy()
 
 class Generation:
-    def __init__(self, target_model, draft_model, processor, kwargs):
+    def __init__(self, args, target_model, draft_model, processor, kwargs):
         """
         Initializes the Generation class with target and draft models, processor, and additional kwargs.
 
         Args:
+            args (argparse.Namespace): Command-line arguments.
             target_model (PreTrainedModel): The target Hugging Face model for generation.
             draft_model (PreTrainedModel): The draft Hugging Face model for speculative sampling.
             processor (Processor): The processor associated with the models.
@@ -144,6 +141,7 @@ class Generation:
         Note: 
             if using only target model, the cache will be shared. 
         """
+        self.args = args
         self.target_model = target_model
         self.draft_model = draft_model
         self.processor = processor
@@ -172,8 +170,12 @@ class Generation:
         self.draft_model_kwargs['use_cache'] = False
 
         # Initialize external caches - use same cache if models are identical
-        self.target_cache = DynamicCache(device=self.device, dtype=torch.bfloat16)
-        self.draft_cache = self.target_cache if self.shared_models else DynamicCache(device=self.device, dtype=torch.bfloat16)
+        self.target_cache = DynamicCache(device=self.device, dtype=self.args.dtype, max_length=self.args.max_length, 
+                                        compression_ratio=self.args.compression_ratio, recent_ratio=self.args.recent_ratio)
+        self.draft_cache = self.target_cache if self.shared_models else DynamicCache(device=self.device, dtype=self.args.dtype, 
+                                                                                   max_length=self.args.max_length, 
+                                                                                   compression_ratio=self.args.compression_ratio, 
+                                                                                   recent_ratio=self.args.recent_ratio)
         logging.debug("External cache(s) created" + (" (shared)" if self.shared_models else ""))
 
     def prepare_generation_config(self):
@@ -215,7 +217,7 @@ class Generation:
         # Add past_key_values if cache exists
         if len(cache) > 0:
             model_kwargs['past_key_values'] = cache.to_list()
-            if DEBUG:
+            if self.args.debug:
                 logging.debug(f"Added cache of length {len(cache)} to {role} model kwargs")
         
         return model_kwargs
@@ -244,7 +246,7 @@ class Generation:
             new_past = None
 
         if new_past is not None:
-            if DEBUG:
+            if self.args.debug:
                 logging.debug(f"Updating {role} cache with {num_tokens} new tokens")
             cache.update(new_past, num_tokens)
 
@@ -278,12 +280,12 @@ class Generation:
         # Get sampling flag from generation config
         do_sample = self.target_generation_config.do_sample
         max_new_tokens = self.target_generation_config.max_new_tokens
-        num_first_target = FIRST_N_TOKENS
-        num_draft_samples = NUM_DRAFT_SAMPLES
+        num_first_target = self.args.first_n_tokens
+        num_draft_samples = self.args.num_draft_samples
         tokens_generated = 0
         
         # Generate initial context with target model
-        if DEBUG:
+        if self.args.debug:
             logging.debug("Generating initial context with target model")
         
         # Prepare model_kwargs with external cache (initially empty)
@@ -340,7 +342,7 @@ class Generation:
         ), dim=1)
         tokens_generated += num_first_target
 
-        if DEBUG:
+        if self.args.debug:
             logging.debug(f"Initial {num_first_target} tokens: '{self.tokenizer.batch_decode(next_tokens[0], skip_special_tokens=True)}'")
 
         def clear_memory():
@@ -350,7 +352,7 @@ class Generation:
 
         # Main generation loop
         while tokens_generated < max_new_tokens:  # sets hard limit on total number of tokens generated
-            if DEBUG:
+            if self.args.debug:
                 logging.debug(f"\nGeneration step {tokens_generated}/{max_new_tokens}")
                 logging.debug(f"GPU Memory: {torch.cuda.memory_allocated()/1024**3:.2f}GB")
 
@@ -400,7 +402,7 @@ class Generation:
                     torch.ones((current_attention_mask.shape[0], 1), device=self.device, dtype=torch.long)
                 ], dim=1)
 
-            if DEBUG:
+            if self.args.debug:
                 debug_tokens = torch.tensor(draft_tokens).unsqueeze(0).unsqueeze(-1).tolist()
                 logging.debug(f"Draft tokens: '{self.tokenizer.batch_decode(debug_tokens[0], skip_special_tokens=True)}'")
             draft_tokens = torch.cat(draft_tokens, dim=1)
@@ -427,7 +429,7 @@ class Generation:
             # BONUS: Get the extra target logit in case all tokens are accepted
             extra_target_logits = target_outputs['logits'][:, -1:, :]
 
-            if DEBUG:
+            if self.args.debug:
                 logging.debug(f"Target logits shape: {target_logits.shape}")
                 logging.debug(f"Extra target logit shape: {extra_target_logits.shape}")
 
@@ -509,7 +511,7 @@ class Generation:
         accepted_tokens = []
 
         # find argmax of both logits
-        if DEBUG: 
+        if self.args.debug: 
             draft_argmax = draft_logits.argmax(dim=-1)
             target_argmax = target_logits.argmax(dim=-1)
             logging.debug(f"Draft argmax: {draft_argmax}")
@@ -540,7 +542,7 @@ class Generation:
                     # Sample from target with temperature
                     new_token = torch.multinomial(target_probs, num_samples=1)
                     accepted_tokens.append(new_token)
-                    if DEBUG:
+                    if self.args.debug:
                         logging.debug(f"Rejected at position {t} - Sampled new token: '{self.tokenizer.decode(new_token[0])}'")
                     break
             else:
@@ -554,12 +556,12 @@ class Generation:
                 if not accepted.any():
                     accepted_tokens.append(target_token)
                     accepted = False
-                    if DEBUG:
+                    if self.args.debug:
                         logging.debug(f"Rejected at position {t} - Using target token: '{self.tokenizer.decode(target_token[0])}'")
                     break
 
             accepted_tokens.append(current_token)
-            if DEBUG:
+            if self.args.debug:
                 logging.debug(f"Token {t} accepted: '{self.tokenizer.decode(current_token[0])}'")
 
         # BONUS: If all K tokens are accepted and have extra target logits, add one more token
@@ -572,7 +574,7 @@ class Generation:
             
             extra_token = extra_token.squeeze(-1)
             accepted_tokens.append(extra_token.to(dtype=torch.long))
-            if DEBUG:
+            if self.args.debug:
                 logging.debug(f"All {seq_len} tokens accepted! Adding extra token: '{self.tokenizer.batch_decode(extra_token[0], skip_special_tokens=True)}'")
 
         # If no tokens were accepted, return empty tensor
@@ -580,6 +582,6 @@ class Generation:
             return torch.empty((batch_size, 0), dtype=torch.long, device=self.device), 0
 
         accepted_tokens = torch.cat(accepted_tokens, dim=1)
-        if DEBUG:
+        if self.args.debug:
             logging.debug(f"Total accepted tokens: {accepted_tokens.size(1)}")
         return accepted_tokens, accepted_tokens.size(1)
