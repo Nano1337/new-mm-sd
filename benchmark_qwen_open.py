@@ -12,106 +12,121 @@ import time
 from qwen_vl_utils import process_vision_info
 from utils import get_mismatches, get_parsed_args, run_model, run_model_with_assistant
 import asyncio
-from spd import (
-    Generation
-)
+from spd import Generation
+from dataclasses import dataclass
+from typing import List
+import argparse
 
-"""
-Preliminary benchmarks for Qwen2-VL-7B-Instruct-AWQ on A100: 
-Average time per input (ms): 5569.69
-Average time per token (ms): 45.80
+@dataclass
+class BenchmarkMetrics:
+    """Stores benchmark metrics for model inference"""
+    outputs: List[str]
+    generation_times: List[float]
+    token_counts: List[int]
 
-Preliminary benchmarks for Qwen2-VL-7B-Instruct-AWQ on A10G: 
-Average time per input (ms): 6049.42
-Average time per token (ms): 50.24
+    @property
+    def avg_time_per_input_ms(self) -> float:
+        """Average time in milliseconds to process each input"""
+        return (sum(self.generation_times) / len(self.generation_times)) * 1000
 
-Preliminary benchmarks for Qwen2-VL-2B-Instruct-AWQ on A10G: 
-Average time per input (ms): 4998.40
-Average time per token (ms): 47.20
+    @property
+    def avg_time_per_token_ms(self) -> float:
+        """Average time in milliseconds to generate each token"""
+        return (sum(self.generation_times) / sum(self.token_counts)) * 1000
 
-Preliminary benchmarks for speculative decoding on A10G: 
-Average time per input (ms): 792.51
-Average time per token (ms): 46.62
+    def __str__(self) -> str:
+        return (
+            f"Benchmark Results:\n"
+            f"Average time per input (ms): {self.avg_time_per_input_ms:.2f}\n"
+            f"Average time per token (ms): {self.avg_time_per_token_ms:.2f}\n"
+            f"Total tokens generated: {sum(self.token_counts)}\n"
+            f"Generated outputs: {self.outputs}"
+        )
 
-"""
+def parse_args():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='Benchmark Qwen-VL models')
+    parser.add_argument('--use_spd', type=bool, default=True,
+                      help='Whether to use speculative decoding')
+    parser.add_argument('--gen_len', type=int, default=128,
+                      help='Maximum number of tokens to generate')
+    parser.add_argument('--num_samples', type=int, default=10,
+                      help='Number of samples to process')
+    parser.add_argument('--temperature', type=float, default=None,
+                      help='Sampling temperature (None for greedy)')
+    parser.add_argument('--target_model', type=str, 
+                      default="Qwen/Qwen2-VL-7B-Instruct-AWQ",
+                      help='Path to target model')
+    parser.add_argument('--assistant_model', type=str,
+                      default="Qwen/Qwen2-VL-2B-Instruct-AWQ",
+                      help='Path to assistant model')
+    return parser.parse_args()
 
-USE_SPD = True
-GEN_LEN = 128
+def setup_models(args):
+    """Initialize models and processors with given configuration"""
+    # very conservative settings to prevent OOM
+    # Standard resolution commonly used in vision models (224x224)
+    min_pixels = 224*224  # = 50,176 pixels
+    # Maximum resolution that balances quality and memory
+    max_pixels = 512*512  # = 262,144 pixels
 
-# initialize model and processor
-model = Qwen2VLForConditionalGeneration.from_pretrained(
-    "Qwen/Qwen2-VL-7B-Instruct-AWQ",
-    torch_dtype=torch.float16,
-    attn_implementation="flash_attention_2",
-    device_map="auto",
-)
+    model = Qwen2VLForConditionalGeneration.from_pretrained(
+        args.target_model,
+        torch_dtype=torch.float16,
+        attn_implementation="flash_attention_2",
+        device_map="auto",
+    )
 
-# load draft model for speculative decoding
-assistant_model = Qwen2VLForConditionalGeneration.from_pretrained(
-    "Qwen/Qwen2-VL-2B-Instruct-AWQ",
-    torch_dtype=torch.float16,
-    attn_implementation="flash_attention_2",
-    device_map="auto",
-)
+    processor = AutoProcessor.from_pretrained(
+        args.target_model, 
+        min_pixels=min_pixels, 
+        max_pixels=max_pixels,
+        do_resize=True,
+        do_rescale=True,
+        do_normalize=True
+    )
 
-# # limit the number of image tokens or else it'll take a ton of vram
-# min_pixels = 256*28*28
-# max_pixels = 1280*28*28 
+    if args.target_model == args.assistant_model:
+        return model, model, processor, processor
+    else:
+        assistant_model = Qwen2VLForConditionalGeneration.from_pretrained(
+            args.assistant_model,
+            torch_dtype=torch.float16,
+            attn_implementation="flash_attention_2",
+            device_map="auto",
+        )
+        assistant_processor = AutoProcessor.from_pretrained(
+            args.assistant_model, 
+            min_pixels=min_pixels, 
+            max_pixels=max_pixels,
+            do_resize=True,
+            do_rescale=True,
+            do_normalize=True
+        )
 
-# very conservative settings to prevent OOM
-# Standard resolution commonly used in vision models (224x224)
-min_pixels = 224*224  # = 50,176 pixels
-# Maximum resolution that balances quality and memory
-max_pixels = 384*384  # = 147,456 pixels
+        return model, assistant_model, processor, assistant_processor
 
-processor = AutoProcessor.from_pretrained(
-    "Qwen/Qwen2-VL-7B-Instruct", 
-    min_pixels=min_pixels, 
-    max_pixels=max_pixels,
-    do_resize=True,
-    do_rescale=True,
-    do_normalize=True
-)
-assistant_processor = AutoProcessor.from_pretrained(
-    "Qwen/Qwen2-VL-2B-Instruct", 
-    min_pixels=min_pixels, 
-    max_pixels=max_pixels,
-    do_resize=True,
-    do_rescale=True,
-    do_normalize=True
-)
+def get_generation_kwargs(args):
+    """Configure generation parameters"""
+    generate_kwargs = {
+        "max_new_tokens": args.gen_len,
+        "use_cache": False,
+    }
+    if args.temperature is not None:
+        generate_kwargs.update({
+            "do_sample": True,
+            "temperature": args.temperature,
+            "top_p": 0.001,
+            "top_k": 1,
+        })
+    else:
+        generate_kwargs.update({
+            "do_sample": False,
+        })
+    return generate_kwargs
 
-num_samples = 10
-temp = None # baseline with greedy sampling strategy to get quality guarantees
-outputs = []
-gen_time = []
-num_tokens = []
-
-# model generation kwargs
-# relevant code can be found in transformers/generation/utils.py
-generate_kwargs = {
-    "max_new_tokens": GEN_LEN,
-    "use_cache": False,
-}
-if temp is not None:
-    generate_kwargs.update({
-        "do_sample": True,
-        "temperature": temp,
-        "top_p": 0.001,
-        "top_k": 1,
-    })
-else:
-    generate_kwargs.update({
-        "do_sample": False,
-    })
-
-if USE_SPD:
-    spd = Generation(model, assistant_model, processor, generate_kwargs)
-else:
-    # Using target model only
-    spd = Generation(model, model, processor, generate_kwargs)
-
-def process_image(image):
+def process_image(image, processor):
+    """Process an image for model inference"""
     messages = [
         {
             "role": "user",
@@ -140,71 +155,65 @@ def process_image(image):
     return inputs
 
 def custom_collate_fn(batch):
+    """Collate function for DataLoader"""
     return [b["image"] for b in batch]
 
-
 def main():
+    """
+    Main benchmark function that:
+    1. Loads and processes COCO validation images
+    2. Runs inference using either standard or speculative decoding
+    3. Collects and reports benchmark metrics
+    """
+    args = parse_args()
+    
+    # Set random seeds for reproducibility
     torch.manual_seed(0)
     torch.cuda.manual_seed(0)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     
+    # Setup models and generation parameters
+    model, assistant_model, processor, assistant_processor = setup_models(args)
+    generate_kwargs = get_generation_kwargs(args)
+    
+    # Initialize SPD
+    if args.use_spd:
+        spd = Generation(model, assistant_model, processor, generate_kwargs)
+    else:
+        spd = Generation(model, model, processor, generate_kwargs)
+    
+    # Initialize metric collectors
+    metrics = BenchmarkMetrics(outputs=[], generation_times=[], token_counts=[])
+    
+    # Load dataset
     ds = load_dataset("sayakpaul/coco-30-val-2014", split="train")
-    # TODO: study batch inference later, this is a different setting and isn't within scope for now
-    loader = DataLoader(
-        ds, 
-        batch_size=1, 
-        collate_fn=custom_collate_fn
-    )
+    loader = DataLoader(ds, batch_size=1, collate_fn=custom_collate_fn)
 
-    for i, image in tqdm(enumerate(loader), total=num_samples):
-        if i >= num_samples:
+    for i, image in tqdm(enumerate(loader), total=args.num_samples):
+        if i >= args.num_samples:
             break
 
-        # process image and prepare inputs
-        inputs = process_image(image[0])
-
-        # run decoder generation
+        inputs = process_image(image[0], processor)
+        
         start = time.time()
         generated_ids = spd.generate(inputs)
         end = time.time()
 
-        # process output to be human readable
         generated_ids_trimmed = [
-            out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
         output_text = processor.batch_decode(
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )
-        outputs.append(output_text)
+        metrics.outputs.append(output_text)
 
-        # warmup GPU by discarding first two iterations from collected metrics
-        if i >= 2:  
-            gen_time.append(end - start)
-            num_tokens.append(generated_ids.shape[1] - inputs.input_ids.shape[1])
+        # Skip warmup iterations when collecting metrics
+        if i >= 2:
+            metrics.generation_times.append(end - start)
+            metrics.token_counts.append(generated_ids.shape[1] - inputs.input_ids.shape[1])
 
-    # print collected metric 
-    print(f"outputs: {outputs}")
-    print(f"Average time per input (ms): {(sum(gen_time) / len(gen_time))*1000:.2f}")
-    print(f"Average time per token (ms): {(sum(gen_time) / sum(num_tokens))*1000:.2f}")
-    print(f"Number of tokens generated: {sum(num_tokens)}")
-
-
+    print(metrics)
 
 if __name__ == "__main__":
-
     main()
-
-
-    # args = get_parsed_args()
-
-    # new_outputs = run_model_with_assistant(args, AutoTokenizer, AutoModelForCausalLM, run_prediction_loop)
-    # og_outputs = run_model(args, AutoTokenizer, AutoModelForCausalLM, run_prediction_loop)
-
-    # for i in range(len(og_outputs)):
-    #     print("\nOG :", og_outputs[i])
-    #     print("NEW:", new_outputs[i])
-
-    # if args.temperature is None:
-    #     get_mismatches(og_outputs, new_outputs, args.dtype)
-
