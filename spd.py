@@ -2,6 +2,7 @@ import torch
 import copy
 import logging
 import gc
+import numpy as np
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -351,6 +352,7 @@ class Generation:
             gc.collect()
 
         # Main generation loop
+        sample_acceptance_rate = []
         while tokens_generated < max_new_tokens:  # sets hard limit on total number of tokens generated
             if self.args.debug:
                 logging.debug(f"\nGeneration step {tokens_generated}/{max_new_tokens}")
@@ -434,14 +436,14 @@ class Generation:
                 logging.debug(f"Extra target logit shape: {extra_target_logits.shape}")
 
             # Do speculative sampling to accept/reject tokens
-            valid_tokens_padded, n_matches = self.speculative_sampling(
+            valid_tokens_padded, n_matches, acceptance_rate = self.speculative_sampling(
                 draft_logits=draft_logits,
                 target_logits=target_logits,
                 candidate_new_tokens=draft_tokens,
                 extra_target_logits=extra_target_logits,
                 do_sample=do_sample
             )
-
+            sample_acceptance_rate.append(acceptance_rate)
             # Update input_ids and attention_mask with accepted tokens
             input_ids = torch.cat((input_ids, valid_tokens_padded), dim=-1)
             attention_mask = torch.cat((
@@ -477,7 +479,12 @@ class Generation:
             del target_outputs
             clear_memory()
 
-        return input_ids
+        # calculate average acceptance rate
+        sample_acceptance_rate = np.array(sample_acceptance_rate)
+        average_acceptance_rate = np.mean(sample_acceptance_rate)
+        if self.args.debug:
+            logging.debug(f"Average acceptance rate: {average_acceptance_rate:.2f}")
+        return input_ids, average_acceptance_rate
 
     def speculative_sampling(self, draft_logits, target_logits, candidate_new_tokens, extra_target_logits=None, do_sample=False):
         """
@@ -524,6 +531,7 @@ class Generation:
             logging.debug(f"Target argmax tokens decoded: {target_argmax_tokens}")
         
         accepted = True
+        last_t = 0
         for t in range(seq_len):
             current_token = candidate_new_tokens[:, t:t+1]
             
@@ -542,20 +550,19 @@ class Generation:
                     # Sample from target with temperature
                     new_token = torch.multinomial(target_probs, num_samples=1)
                     accepted_tokens.append(new_token)
+                    last_t = t
                     if self.args.debug:
                         logging.debug(f"Rejected at position {t} - Sampled new token: '{self.tokenizer.decode(new_token[0])}'")
                     break
             else:
                 # Using Greedy Decoding
                 target_token = target_logits[:, t].argmax(dim=-1, keepdim=True)
-                # draft_token_prob = torch.softmax(draft_logits[:, t], dim=-1).gather(-1, current_token)
-                # target_token_prob = torch.softmax(target_logits[:, t], dim=-1).gather(-1, target_token)
-                
-                accepted = (current_token == target_token) # or (draft_token_prob >= acceptance_threshold * target_token_prob)
+                accepted = (current_token == target_token)
                 
                 if not accepted.any():
                     accepted_tokens.append(target_token)
                     accepted = False
+                    last_t = t
                     if self.args.debug:
                         logging.debug(f"Rejected at position {t} - Using target token: '{self.tokenizer.decode(target_token[0])}'")
                     break
@@ -564,8 +571,11 @@ class Generation:
             if self.args.debug:
                 logging.debug(f"Token {t} accepted: '{self.tokenizer.decode(current_token[0])}'")
 
+
+
         # BONUS: If all K tokens are accepted and have extra target logits, add one more token
         if len(accepted_tokens) == seq_len and accepted and extra_target_logits is not None:
+            last_t = self.args.num_draft_samples
             if do_sample:
                 extra_probs = torch.softmax(extra_target_logits.squeeze(1), dim=-1)
                 extra_token = torch.multinomial(extra_probs, num_samples=1)
@@ -584,4 +594,9 @@ class Generation:
         accepted_tokens = torch.cat(accepted_tokens, dim=1)
         if self.args.debug:
             logging.debug(f"Total accepted tokens: {accepted_tokens.size(1)}")
-        return accepted_tokens, accepted_tokens.size(1)
+
+        # log acceptance rate
+        acceptance_rate = last_t / self.args.num_draft_samples
+        if self.args.debug:
+            logging.debug(f"Acceptance rate: {acceptance_rate:.2f}")
+        return accepted_tokens, accepted_tokens.size(1), acceptance_rate

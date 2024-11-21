@@ -89,7 +89,7 @@ def main():
         spd = Generation(args, model, model, processor, generate_kwargs)
     
     # Initialize metric collectors
-    metrics = BenchmarkMetrics(outputs=[], generation_times=[], token_counts=[])
+    metrics = BenchmarkMetrics(outputs=[], generation_times=[], token_counts=[], acceptance_rates=[])
     
     # Load dataset
     ds = load_dataset("sayakpaul/coco-30-val-2014", split="train")
@@ -102,7 +102,7 @@ def main():
         inputs = process_image(image[0], processor)
         
         start = time.time()
-        generated_ids = spd.generate(inputs)
+        generated_ids, acceptance_rate = spd.generate(inputs)
         end = time.time()
 
         generated_ids_trimmed = [
@@ -114,10 +114,10 @@ def main():
         metrics.outputs.append(output_text)
 
         # Skip warmup iterations when collecting metrics
-        if i >= 2:
+        if i >= 1:
             metrics.generation_times.append(end - start)
             metrics.token_counts.append(generated_ids.shape[1] - inputs.input_ids.shape[1])
-
+            metrics.acceptance_rates.append(acceptance_rate)
     print(metrics)
 
 if __name__ == "__main__":
