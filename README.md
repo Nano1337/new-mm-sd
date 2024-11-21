@@ -17,67 +17,27 @@ source ~/.bashrc
 
 This project was created by first running `uv init mm-sd` to create a project template and then setting up a virtual environment by running: 
 ```bash 
-uv venv 
+uv venv --python 3.11.10
 source .venv/bin/activate
 ```
 
+Install dependencies:
+```bash
+uv sync
+```
 
-TODO: update the rest of this description to use `uv` tooling instead:
+To install flash-attn, please cross-check with the prebuilt wheel that matches your system specs. Please read this article for more details: https://til.simonwillison.net/python/installing-flash-attention
 
-### Prerequisites
-
-- Python 3.11.10 (We recommend using `pyenv` to manage Python versions)
-- CUDA-compatible GPU with at least 24GB VRAM to be safe. 
-    - We advise to use CUDA 12.1 or higher.
-
-### Installation
-
-0. Ensure your Ubuntu version is 22.04 and is up to date. 
-
-1. Install Python 3.11.10 using pyenv: 
-   ```
-   pyenv install 3.11.10
-   pyenv local 3.11.10
-   ```
-   and then verify the installation with:
-   ```
-   python --version
-   ```
-   If you run into any issues installing with pyenv, it may be that your apt is outdated. You can update it with the following commands:
-   ```
-   sudo apt update
-   sudo apt upgrade
-   ```
-   Any other issues can be resolved with ChatGPT. 
-
-2. Create and activate a virtual environment:
-   ```
-   python -m venv venv
-   source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
-   ```
-
-3. Install uv (a faster alternative to pip):
-   ```
-   pip install uv
-   ```
-
-4. Install dependencies:
-   ```
-   uv pip install autoawq
-   uv pip install -r requirements.txt --no-deps
-   uv pip install wheel
-   pip install flash-attn --no-build-isolation
-   ```
-
-   Note: The order of installation is important due to potential conflicts between packages.
-
-### Troubleshooting
-
-- If you encounter issues with CUDA or GPU support, ensure you have the latest NVIDIA drivers installed.
-- For `flash-attn` installation problems, refer to its [official documentation](https://github.com/Dao-AILab/flash-attention) for system-specific instructions.
+As an example, I'm running python 3.11.10, cuda 12.1, ubuntu 22.04, x86_64, so I installed the correct version from the [releases page](https://github.com/Dao-AILab/flash-attention/releases): 
+```bash
+wget https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.0.post2/flash_attn-2.7.0.post2+cu12torch2.5cxx11abiTRUE-cp311-cp311-linux_x86_64.whl
+uv pip install --no-deps --upgrade flash_attn-2.7.0.post2+cu12torch2.5cxx11abiTRUE-cp311-cp311-linux_x86_64.whl
+```
 
 
-# Assisted Generation Benchmarks
+# TODO: how to run - Assisted Generation Benchmarks
+
+TODO: this section is outdated, will update soon
 
 Example command:
 ```
