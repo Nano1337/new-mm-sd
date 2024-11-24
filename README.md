@@ -28,6 +28,8 @@ To install all dependencies (except for flash-attn), run:
 uv sync
 ```
 
+TODO: create arg flag to disable flash attn since users might not have access to fancy GPU. 
+
 To install flash-attn, please cross-check with the prebuilt wheel that matches your system specs. Please read this article for more details: https://til.simonwillison.net/python/installing-flash-attention
 
 For example, here are my system specifications and the corresponding flash-attention wheel I installed:
@@ -62,4 +64,8 @@ See `parse_args()` in `utils.py` for a list of flags.
 - [ ] Implement BenchmarkMetrics to display different colors for which token is associated with which model that generated it
 - [ ] Do this for a visual reasoning dataset?
 - [ ] Do this for [WildVision-Bench](https://github.com/WildVision-AI/WildVision-Bench/blob/main/data/vision_bench_0617/model_answers/Qwen_Qwen-VL-Chat.jsonl)
-gi
+
+
+## Brainstorming/Sanity Checks: 
+- Is the tokens generated w.r.t. models consistent across different k draft tokens? If this holds, this would allow us to abstract away the notion of acceptance rate and study the trajectory more easily instead. 
+    - Given the trajectory associated with each model per sample, can we use this information to study the uncertainty of generation or some other qualitative property we would like to know about model capabilities across scales? 
