@@ -1,8 +1,11 @@
 import argparse
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 from qwen_vl_utils import process_vision_info
+from rich.text import Text
+from rich.console import Console
+from rich.table import Table
 
 def parse_args():
     """Parse command line arguments"""
@@ -21,6 +24,8 @@ def parse_args():
                       help='Whether to average the acceptance rate over the trajectory of a single sample') # TODO: use this in the code and dataclass
     parser.add_argument('--no_reduce_acceptance_rate', action='store_false', dest='reduce_acceptance_rate',
                       help='Whether to average the acceptance rate over the trajectory of a single sample')
+    parser.add_argument('--trajectory', action='store_true', default=False,
+                      help='Whether to show the generated tokens')
     
     # speculative decoding args
     parser.add_argument('--num_draft_samples', type=int, default=6,
@@ -65,7 +70,10 @@ class BenchmarkMetrics:
     outputs: List[str]
     generation_times: List[float]
     token_counts: List[int]
-    acceptance_rates: List[float]
+    acceptance_rates: List[List[float]]  # Changed to List[List[float]]
+    text_tokens: Optional[List[List[str]]] = None
+    trajectories: Optional[List[List[int]]] = None
+
     @property
     def avg_time_per_input_ms(self) -> float:   
         """Average time in milliseconds to process each input"""
@@ -82,23 +90,69 @@ class BenchmarkMetrics:
         if self.args.reduce_acceptance_rate:
             return [round(float(rate) * 100, 1) for rate in self.acceptance_rates]
         else:
-            return self.acceptance_rates
+            # Flatten the list if reduce_acceptance_rate is False
+            return [rate for sublist in self.acceptance_rates for rate in sublist]
 
-    def __str__(self) -> str:
-        output = (
-            f"Benchmark Results:\n"
-            f"Average time per input (ms): {self.avg_time_per_input_ms:.2f}\n"
-            f"Average time per token (ms): {self.avg_time_per_token_ms:.2f}\n"
-            f"Total tokens generated: {sum(self.token_counts)}\n"
-        )
+    @property
+    def rich_output(self) -> Optional[List[Text]]:
+        if self.args.trajectory:
+            rich_output = []
+            for tokens, trajectory in zip(self.text_tokens, self.trajectories):
+                rich_output.append(self.color_tokens(tokens, trajectory))
+            return rich_output
+        else:
+            return None
+
+    def color_tokens(self, tokens: List[str], trajectory: List[int]) -> Text:
+        """Colors tokens based on which model generated them"""
+        colors = {
+            0: "bright_blue",    # Target model (first tokens)
+            1: "bright_red",     # Draft model (accepted)
+            2: "yellow"          # Draft model (rejected)
+        }
         
-        output += "Per Sample Results:\n"
-        for i in range(int(self.args.num_samples)):
-            output += f"\nSample {i}:\n"
-            output += f"  Output: {self.outputs[i]}\n"
-            output += f"  Acceptance rates: {self.acceptance_rates_list[i]}\n"
-            
-        return output
+        text = Text()
+
+        for token, model_idx in zip(tokens, trajectory):
+            color = colors.get(model_idx, "white")  # Default to white if index not found
+            text.append(token, style=color)  # No additional space
+        return text
+
+    def __rich_console__(self, console: Console, options: "ConsoleOptions"):
+        """Custom rich console rendering"""
+        yield from self.get_rich_representation(console, options)
+
+    def get_rich_representation(self, console: Console, options: "ConsoleOptions"):
+        """Generates rich renderable objects"""
+        # Create a table for benchmark results
+        table = Table(title="Benchmark Results")
+
+        table.add_column("Metric", style="cyan", no_wrap=True)
+        table.add_column("Value", style="magenta")
+
+        table.add_row("Average time per input (ms)", f"{self.avg_time_per_input_ms:.2f}")
+        table.add_row("Average time per token (ms)", f"{self.avg_time_per_token_ms:.2f}")
+        table.add_row("Total tokens generated", str(sum(self.token_counts)))
+
+        yield table
+
+        # Per Sample Results
+        if self.args.trajectory:
+            for i in range(int(self.args.num_samples)):
+                # Sample Header
+                yield Text(f"\nSample {i}:", style="bold yellow")
+                
+                # Labeled Output Label
+                yield Text("  Labeled Output: ", style="bold")
+                
+                # Colored Output
+                rich_output = self.rich_output[i]
+                yield rich_output
+        else:
+            for i in range(int(self.args.num_samples)):
+                yield Text(f"\nSample {i}:", style="bold yellow")
+                yield Text(f"  Output: {self.outputs[i]}", style="green")
+                yield Text(f"  Acceptance rates: {self.acceptance_rates_list[i]}", style="red")
 
 def get_generation_kwargs(args):
     """Configure generation parameters"""

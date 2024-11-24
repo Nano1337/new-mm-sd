@@ -15,6 +15,7 @@ from utils import (
     BenchmarkMetrics, 
     get_generation_kwargs
 )
+from rich import print as rprint 
 
 """
 Experimentation ideas: 
@@ -95,6 +96,9 @@ def main():
     
     # Initialize metric collectors
     metrics = BenchmarkMetrics(args=args, outputs=[], generation_times=[], token_counts=[], acceptance_rates=[])
+    if args.trajectory: 
+        metrics.text_tokens = []
+        metrics.trajectories = []
     
     # Load dataset
     ds = load_dataset("sayakpaul/coco-30-val-2014", split="train")
@@ -107,9 +111,13 @@ def main():
         inputs = process_image(image[0], processor)
         
         start = time.time()
-        generated_ids, acceptance_rate = spd.generate(inputs)
+        if args.trajectory: 
+            generated_ids, acceptance_rate, trajectory = spd.generate(inputs)
+        else: 
+            generated_ids, acceptance_rate = spd.generate(inputs)
         end = time.time()
 
+        # only show generated tokens
         generated_ids_trimmed = [
             out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
@@ -119,12 +127,30 @@ def main():
         metrics.outputs.append(output_text)
         metrics.acceptance_rates.append(acceptance_rate)
 
+        # NOTE: 0 for draft model, 1 for target model, 2 for bonus token
+        # TODO: if we replace bonus id 2 with target id 1, do we see consistency across different k draft samples? 
+        #         - if we increase k till we see no more bonus tokens, do all the other tokens match?
+
+        # prepend n 1s for args.first_n_tokens
+        trajectory = [1] * args.first_n_tokens + trajectory
+        if args.trajectory:
+            generated_ids_text = []
+            generated_ids_postprocessed = generated_ids_trimmed[0]
+            for out_ids in generated_ids_postprocessed:
+                out_text = processor.decode(
+                    out_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
+                )
+                generated_ids_text.append(out_text)
+            metrics.text_tokens.append(generated_ids_text)
+            metrics.trajectories.append(trajectory)
+
         # Skip warmup iterations when collecting metrics
         if i >= 1:
             metrics.generation_times.append(end - start)
             metrics.token_counts.append(generated_ids.shape[1] - inputs.input_ids.shape[1])
 
-    print(metrics)
+    # Use rich's print function to display metrics with colors
+    rprint(metrics)
 
 if __name__ == "__main__":
     main()

@@ -353,6 +353,8 @@ class Generation:
 
         # Main generation loop
         sample_acceptance_rate = []
+        if self.args.trajectory:
+            trajectory = []
         while tokens_generated < max_new_tokens:  # sets hard limit on total number of tokens generated
             if self.args.debug:
                 logging.debug(f"\nGeneration step {tokens_generated}/{max_new_tokens}")
@@ -436,13 +438,23 @@ class Generation:
                 logging.debug(f"Extra target logit shape: {extra_target_logits.shape}")
 
             # Do speculative sampling to accept/reject tokens
-            valid_tokens_padded, n_matches, acceptance_rate = self.speculative_sampling(
-                draft_logits=draft_logits,
-                target_logits=target_logits,
-                candidate_new_tokens=draft_tokens,
-                extra_target_logits=extra_target_logits,
-                do_sample=do_sample
-            )
+            if self.args.trajectory: 
+                valid_tokens_padded, n_matches, acceptance_rate, local_trajectory = self.speculative_sampling(
+                    draft_logits=draft_logits,
+                    target_logits=target_logits,
+                    candidate_new_tokens=draft_tokens,
+                    extra_target_logits=extra_target_logits,
+                    do_sample=do_sample
+                )
+                trajectory.extend(local_trajectory)
+            else: 
+                valid_tokens_padded, n_matches, acceptance_rate = self.speculative_sampling(
+                    draft_logits=draft_logits,
+                    target_logits=target_logits,
+                    candidate_new_tokens=draft_tokens,
+                    extra_target_logits=extra_target_logits,
+                    do_sample=do_sample
+                )
             sample_acceptance_rate.append(acceptance_rate)
             # Update input_ids and attention_mask with accepted tokens
             input_ids = torch.cat((input_ids, valid_tokens_padded), dim=-1)
@@ -487,7 +499,11 @@ class Generation:
                 logging.debug(f"Average acceptance rate: {average_acceptance_rate:.2f}")
         else:
             average_acceptance_rate = sample_acceptance_rate
-        return input_ids, average_acceptance_rate
+
+        if self.args.trajectory: 
+            return input_ids, average_acceptance_rate, trajectory
+        else: 
+            return input_ids, average_acceptance_rate   
 
     def speculative_sampling(self, draft_logits, target_logits, candidate_new_tokens, extra_target_logits=None, do_sample=False):
         """
@@ -507,10 +523,11 @@ class Generation:
         if do_sample:
             # TODO: get temperature from generation config
             temperature = 0.7
+            # TODO: make this a hyperparameter
+            acceptance_threshold = 0.3
         else:
             temperature = 1.0
-        # TODO: make this a hyperparameter
-        acceptance_threshold = 0.3
+
 
         # Process logits
         draft_logits = draft_logits / temperature
@@ -519,6 +536,8 @@ class Generation:
         batch_size = candidate_new_tokens.size(0)
         seq_len = candidate_new_tokens.size(1)
         accepted_tokens = []
+        if self.args.trajectory:
+            local_trajectory = []
 
         # find argmax of both logits
         if self.args.debug: 
@@ -561,7 +580,7 @@ class Generation:
                 # Using Greedy Decoding
                 target_token = target_logits[:, t].argmax(dim=-1, keepdim=True)
                 accepted = (current_token == target_token)
-                
+
                 if not accepted.any():
                     accepted_tokens.append(target_token)
                     accepted = False
@@ -569,12 +588,18 @@ class Generation:
                     if self.args.debug:
                         logging.debug(f"Rejected at position {t} - Using target token: '{self.tokenizer.decode(target_token[0])}'")
                     break
+                
+                # Update last_t for each accepted token
+                last_t = t + 1
 
             accepted_tokens.append(current_token)
             if self.args.debug:
                 logging.debug(f"Token {t} accepted: '{self.tokenizer.decode(current_token[0])}'")
 
-
+        if self.args.trajectory:
+            if self.args.debug: 
+                logging.debug(f"last_t value: {last_t}")
+            local_trajectory = [0] * last_t
 
         # BONUS: If all K tokens are accepted and have extra target logits, add one more token
         if len(accepted_tokens) == seq_len and accepted and extra_target_logits is not None:
@@ -587,8 +612,13 @@ class Generation:
             
             extra_token = extra_token.squeeze(-1)
             accepted_tokens.append(extra_token.to(dtype=torch.long))
+            if self.args.trajectory: 
+                local_trajectory.append(2)
             if self.args.debug:
                 logging.debug(f"All {seq_len} tokens accepted! Adding extra token: '{self.tokenizer.batch_decode(extra_token[0], skip_special_tokens=True)}'")
+        else: 
+            if self.args.trajectory: 
+                local_trajectory.append(1)
 
         # If no tokens were accepted, return empty tensor
         if not accepted_tokens:
@@ -602,4 +632,10 @@ class Generation:
         acceptance_rate = last_t / self.args.num_draft_samples
         if self.args.debug:
             logging.debug(f"Acceptance rate: {acceptance_rate:.2f}")
-        return accepted_tokens, accepted_tokens.size(1), acceptance_rate
+        
+        if self.args.trajectory: 
+            if self.args.debug: 
+                logging.debug(f"Local trajectory: {local_trajectory}")
+            return accepted_tokens, accepted_tokens.size(1), acceptance_rate, local_trajectory
+        else: 
+            return accepted_tokens, accepted_tokens.size(1), acceptance_rate
