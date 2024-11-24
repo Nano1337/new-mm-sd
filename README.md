@@ -62,3 +62,4 @@ See `parse_args()` in `utils.py` for a list of flags.
 - [ ] Implement BenchmarkMetrics to display different colors for which token is associated with which model that generated it
 - [ ] Do this for a visual reasoning dataset?
 - [ ] Do this for [WildVision-Bench](https://github.com/WildVision-AI/WildVision-Bench/blob/main/data/vision_bench_0617/model_answers/Qwen_Qwen-VL-Chat.jsonl)
+gi
