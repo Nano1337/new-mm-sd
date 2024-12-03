@@ -16,7 +16,7 @@ def parse_args():
                       help='Whether to use speculative decoding with draft model, otherwise use target model only')
     parser.add_argument('--no_spd', action='store_false', dest='use_spd',
                       help='Disable speculative decoding')
-    parser.add_argument('--gen_len', type=int, default=128,
+    parser.add_argument('--gen_len', type=int, default=256,
                       help='Maximum number of tokens to generate per sample')
     parser.add_argument('--num_samples', type=int, default=10,
                       help='Number of samples to process, must be >= 2 for benchmark metrics to be recorded')
@@ -106,9 +106,9 @@ class BenchmarkMetrics:
     def color_tokens(self, tokens: List[str], trajectory: List[int]) -> Text:
         """Colors tokens based on which model generated them"""
         colors = {
-            0: "bright_blue",    # Target model (first tokens)
-            1: "bright_red",     # Draft model (accepted)
-            2: "yellow"          # Draft model (rejected)
+            0: "bright_cyan",    # Target model (first tokens)
+            1: "bright_magenta",     # Draft model (accepted)
+            2: "bright_yellow"          # Draft model (rejected)
         }
         
         text = Text()
@@ -202,6 +202,42 @@ def process_image(image, processor):
     inputs = inputs.to("cuda")
     return inputs
 
+def wildvision_process_image(batch, processor):
+    """Process an image for wildvision dataset inference"""
+    print(f"batch contents: {batch}")
+    image = batch[0]
+    instruction = batch[1]
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "image": image,
+                },
+                {"type": "text", "text": instruction},
+            ],
+        }
+    ]
+    # Preparation for inference
+    text = processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    image_inputs, video_inputs = process_vision_info(messages)
+    inputs = processor(
+        text=[text],
+        images=image_inputs,
+        videos=video_inputs,
+        padding=True,
+        return_tensors="pt",
+    )
+    inputs = inputs.to("cuda")
+    return inputs
+
 def custom_collate_fn(batch):
     """Collate function for DataLoader"""
     return [b["image"] for b in batch]
+
+def wildvision_custom_collate_fn(batch):
+    """Collate function for DataLoader"""
+    return [(b["image"], b["instruction"]) for b in batch]

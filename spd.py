@@ -87,8 +87,8 @@ class DynamicCache:
                 new_v = new_v.detach().to(dtype=self.dtype, device=self.device)
                 
                 # Concatenate new tokens
-                k = torch.cat((self.past_key_values[i][0], new_k), dim=-1)
-                v = torch.cat((self.past_key_values[i][1], new_v), dim=-1)
+                k = torch.cat((self.past_key_values[i][0], new_k), dim=2)
+                v = torch.cat((self.past_key_values[i][1], new_v), dim=2)
                 
                 # If exceeding max length, compress the cache
                 if k.size(-1) > self.max_length:
