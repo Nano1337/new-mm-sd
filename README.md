@@ -56,7 +56,7 @@ See `parse_args()` in `run_qwen_wildvision.py` for a list of flags.
 
 Running MSCOCO Captioning default task:
 ```bash
-python benchmark_qwen_open.py --no_reduce_acceptance_rate --num_samples 10 --num_draft_samples 10
+python benchmark_qwen_open.py --no_reduce_acceptance_rate --num_samples 3 --num_draft_samples 15 --trajectory
 ```
 
 See `parse_args()` in `utils.py` for a list of flags.

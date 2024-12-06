@@ -132,8 +132,9 @@ def main():
         #         - if we increase k till we see no more bonus tokens, do all the other tokens match?
 
         # prepend n 1s for args.first_n_tokens
-        trajectory = [1] * args.first_n_tokens + trajectory
+
         if args.trajectory:
+            trajectory = [1] * args.first_n_tokens + trajectory
             generated_ids_text = []
             generated_ids_postprocessed = generated_ids_trimmed[0]
             for out_ids in generated_ids_postprocessed:
