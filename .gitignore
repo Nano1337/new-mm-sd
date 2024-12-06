@@ -12,3 +12,4 @@ wheels/
 
 # large files
 *.parquet
+*.env
