@@ -65,19 +65,3 @@ Running WildVision-Bench various tasks:
 ```bash
 python run_qwen_wildvision.py --no_reduce_acceptance_rate --num_samples 500 --num_draft_samples 10 --trajectory
 ```
-
-
-
-## Brainstorming/Sanity Checks: 
-- Is the tokens generated w.r.t. models consistent across different k draft tokens? If this holds, this would allow us to abstract away the notion of acceptance rate and study the trajectory more easily instead. 
-    - Given the trajectory associated with each model per sample, can we use this information to study the uncertainty of generation or some other qualitative property we would like to know about model capabilities across scales? 
-
-- What type of tasks are VLMs better at?
-- Is the acceptance rate of draft VLM higher than using a draft LLM? 
-- What does the acceptance rate look like for the draft LLM as we vary size?
-
-
-### Updated TODOs: 
-- check that LLM draft models works and start generating on Wildvision with it. We can build the benchmark suite analytics while it's running
-- Build out the benchmark suite analytics like how Claude recommended
-- If LLM as draft model works, vary the size of the draft LLM and see how it affects the generation quality (i.e. benchmark suite analytics)
