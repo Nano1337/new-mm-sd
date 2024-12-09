@@ -4,23 +4,27 @@ This is a project by Haoli Yin and Siddharth Shah for the course Advanced Machin
 
 ## Results
 
-Due to limitations of system implementation (see limitations section), we don't aim to achieve practical speedups. Instead, we analyze the acceptance rate of k draft tokens in the multimodal speculative decoding process, varying the image content and task setting. We use the [WildVision-Bench](https://github.com/WildVision-AI/WildVision-Bench) test dataset of 500 samples for our experiments. 
+Due to limitations of system implementation (see limitations section below), we don't aim to achieve practical speedups. Instead, we analyze the acceptance rate of k draft tokens in the multimodal speculative decoding process, varying the image content and task setting. We use the [WildVision-Bench](https://github.com/WildVision-AI/WildVision-Bench) test dataset of 500 samples for our experiments. 
 
 We use an LLM APIs (Claude 3.5 Sonnet and GPT-4o) to classify the task instruction type into distinct categories for ease of analysis. All categories and subcategories can be found in `analysis/categorize_instructions.py`. We use the metric of `prop_draft` = `num_draft_tokens / num_tokens` per sample as a proxy metric for acceptance rate as higher `prop_draft` correlates with higher acceptance rate. We plot the results below: 
 
 ![Subcategory Boxplots](figs/subcategory_boxplots.png)
 
 There are several interesting observations we can make from the results:
-- 
+- Structured Output such as DAT-STR (Structured Data) and FOR-JSN (Output required in JSON format) have significantly higher acceptance rates
+- Creative Tasks have overall lower acceptance rates compared to more structured outputs, which can be attributed to higher entropy due to “creativity”. This is especially prominent in CRE-CAP (creative image captioning) 
+
 
 ### Limitations
 
 We aren't able to achieve practical speedups due to the following limitations:
-- TODO: fill in from presentation
+- draft model usually has to be >10x smaller than target model
+- Need to decouple image encoder and llm decoder and cache image embedding to prevent recomputation each forward pass
+- continuous batching (see [vllm](https://github.com/vllm-project/vllm)) for optimal data I/O and throughput
+
+Another limitation is that this preliminary study was limited to the study of only one model family. It's likely that the higher acceptance rates for structured outputs are due to the draft model's training being biased toward lower entropy domains such as coding and math. 
 
 ## Getting Started
-
-## Setup
 
 We wanted to set this project up using the new `uv` tool for its incredibly fast dependency management.
 
@@ -44,7 +48,6 @@ To install all dependencies (except for flash-attn), run:
 uv sync
 ```
 
-TODO: create arg flag to disable flash attn since users might not have access to fancy GPU. 
 
 To install flash-attn, please cross-check with the prebuilt wheel that matches your system specs. Please read this article for more details: https://til.simonwillison.net/python/installing-flash-attention
 
