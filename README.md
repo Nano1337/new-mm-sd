@@ -1,6 +1,22 @@
-# Multimodal Speculative Decoding
+# Data-Centric Multimodal Speculative Decoding
 
-This is a project by Haoli Yin and Siddharth Shah for the course Advanced Machine Learning at Vanderbilt University, Fall 2024. The aim of this project is to extend speculative decoding to vision-language models and to explore its potential benefits in the multimodal setting as compared to text-only speculative decoding.
+This is a project by Haoli Yin and Siddharth Shah for the course Advanced Machine Learning at Vanderbilt University, Fall 2024. The aim of this project is to extend speculative decoding to vision-language models and to explore its potential benefits in the multimodal setting as compared to text-only speculative decoding. The full presentation slides can be found [here](https://docs.google.com/presentation/d/1E2Z8C9Z4aLtWfyCQUKfkw1SF6Tymd1AHHv1qILD_EFI/edit?usp=sharing) <img src="https://img.icons8.com/color/48/000000/google-slides.png" width="20" height="20"/>
+
+## Results
+
+Due to limitations of system implementation (see limitations section), we don't aim to achieve practical speedups. Instead, we analyze the acceptance rate of k draft tokens in the multimodal speculative decoding process, varying the image content and task setting. We use the [WildVision-Bench](https://github.com/WildVision-AI/WildVision-Bench) test dataset of 500 samples for our experiments. 
+
+We use an LLM APIs (Claude 3.5 Sonnet and GPT-4o) to classify the task instruction type into distinct categories for ease of analysis. All categories and subcategories can be found in `analysis/categorize_instructions.py`. We use the metric of `prop_draft` = `num_draft_tokens / num_tokens` per sample as a proxy metric for acceptance rate as higher `prop_draft` correlates with higher acceptance rate. We plot the results below: 
+
+![Subcategory Boxplots](figs/subcategory_boxplots.png)
+
+There are several interesting observations we can make from the results:
+- 
+
+### Limitations
+
+We aren't able to achieve practical speedups due to the following limitations:
+- TODO: fill in from presentation
 
 ## Getting Started
 
